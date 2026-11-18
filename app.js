@@ -893,7 +893,10 @@
       也能问：「这个月餐饮花了多少」「外卖哪几笔最贵」「上个月一共花了多少」。
     </div>`;
     const items = state.chat.map((m, i) => {
-      if (m.role === 'user') return `<div class="bubble user">${m.img ? `<img class="bubble-img" src="${m.img}" alt="账单图片">` : ''}${m.text ? `<div>${esc(m.text)}</div>` : ''}</div>`;
+      if (m.role === 'user') {
+        const imgs = m.imgs || (m.img ? [m.img] : []);
+        return `<div class="bubble user">${imgs.map((s) => `<img class="bubble-img" src="${s}" alt="账单图片">`).join('')}${m.text ? `<div>${esc(m.text)}</div>` : ''}</div>`;
+      }
       if (m.role === 'card') return renderCard(m, i);
       if (m.role === 'bill') return renderBillCard(m, i);
       if (m.role === 'answer') return renderAnswer(m, i);
@@ -917,7 +920,7 @@
       <button class="cam" data-act="camera" aria-label="识别账单图片">📷</button>
       <input id="chatInput" type="text" placeholder="${state.listening ? '正在听…再点一下结束' : '说一句，或直接打字'}" value="${esc(state.chatInput)}">
       <button class="send" data-act="chat-send" ${state.chatBusy ? 'disabled' : ''}>发送</button>
-      <input id="billFile" type="file" accept="image/*" hidden>
+      <input id="billFile" type="file" accept="image/*" multiple hidden>
     </div>
     ${state.listening ? '<div class="rec-hint" data-act="mic"><span class="pulse"></span>正在听…点这里结束</div>' : ''}`;
   }
@@ -964,6 +967,7 @@
       '9. shared：默认 true（共同支出）；用户说「我自己花的」「个人的」给 false。',
       '10. confidence：0 到 1 的小数。',
       '11. reply：给用户看的一句话，口语，不超过 20 字。识别成功说「记好了」之类，不确定时说明你在问什么。',
+      '12. 最重要的规则：只解析最后一条用户消息。历史消息只用于理解口语指代（如「再来一笔」「也是奶茶」），严禁从历史消息里复制金额、分类、日期或备注，所有字段只能来自最后这条消息本身。',
     ].join('\n');
   }
 
@@ -1099,19 +1103,23 @@
     };
   }
 
-  async function handleBillPicked(file) {
-    if (!file || state.chatBusy) return;
+  async function handleBillPicked(files) {
+    if (!files || !files.length || state.chatBusy) return;
     state.chatBusy = true;
-    state.chat.push({ role: 'user', text: '📷 发了一张账单图片' });
+    state.chat.push({ role: 'user', text: files.length > 1 ? '📷 发了 ' + files.length + ' 张账单图片' : '📷 发了一张账单图片', imgs: [] });
     persistChat();
     render();
 
     try {
-      const [full, thumb] = await Promise.all([
-        readImage(file, 1280, 0.85),
-        readImage(file, 180, 0.7),
-      ]);
-      state.chat[state.chat.length - 1].img = thumb;
+      const pairs = [];
+      for (const f of files) {
+        const [full, thumb] = await Promise.all([
+          readImage(f, 1280, 0.85),
+          readImage(f, 180, 0.7),
+        ]);
+        pairs.push([full, thumb]);
+      }
+      state.chat[state.chat.length - 1].imgs = pairs.map((p) => p[1]);
       persistChat();
       render();
 
@@ -1128,8 +1136,26 @@
           ],
         };
       } else {
-        try { parsed = await parseBillByLLM(full); } catch (e) {
-          console.warn('[llm] 图片识别失败', e && (e.message || e));
+        /* 逐张识别，所有笔合并成一张账单卡片 */
+        const all = [];
+        const replies = [];
+        for (const [full] of pairs) {
+          try {
+            const r = await parseBillByLLM(full);
+            if (r && r.ok !== false && Array.isArray(r.items) && r.items.length) {
+              all.push(...r.items);
+              if (r.reply) replies.push(r.reply);
+            } else if (r && r.reply) {
+              replies.push(r.reply);
+            }
+          } catch (e) {
+            console.warn('[llm] 图片识别失败', e && (e.message || e));
+          }
+        }
+        if (all.length) {
+          parsed = { ok: true, items: all, reply: pairs.length > 1 ? ('几张图共识别出 ' + all.length + ' 笔') : (replies[0] || null) };
+        } else if (replies.length) {
+          parsed = { ok: false, reply: replies[0] };
         }
       }
       state.chatBusy = false;
@@ -1502,13 +1528,7 @@
 
   function localParse(text) {
     const t = String(text).replace(/\s+/g, '');
-    let amount = null;
-    const m1 = t.match(/(\d+(?:\.\d{1,2})?)/);
-    if (m1) amount = Number(m1[1]);
-    if (!amount) {
-      const m2 = t.match(/([零一二两三四五六七八九十百千]+)(?:块钱|块|元)/);
-      if (m2) amount = cnToNum(m2[1]);
-    }
+    const amount = extractAmount(text);
 
     let kind = 'expense';
     if (/(工资|收入|到账|报销|进账|收到钱)/.test(t)) kind = 'income';
@@ -1533,7 +1553,7 @@
       category_id: catId,
       candidates: [],
       note: t.slice(0, 12),
-      date: /昨天/.test(t) ? yesterdayStr() : todayStr(),
+      date: resolveDateExpr(t) || todayStr(),
       payer: payerOther ? 'other' : 'me',
       shared: !personal,
       confidence: catId ? 0.6 : 0,
@@ -1546,6 +1566,98 @@
     const d = new Date();
     d.setDate(d.getDate() - 1);
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  /* --------- 本地事实提取（优先于模型） ---------
+     口语日期（昨天/前天/上周三/15号/11月14日）、金额、分类关键词，
+     这些能从原话直接确定的东西不交给模型猜，杜绝「大盘鸡31记成燃气费100」 */
+  function resolveDateExpr(t) {
+    const now = new Date();
+    const fmt = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    const shift = (n) => { const d = new Date(now); d.setDate(d.getDate() + n); return d; };
+    if (/今天|今日/.test(t)) return fmt(now);
+    if (/昨晚|昨天|昨日/.test(t)) return fmt(shift(-1));
+    if (/大前天/.test(t)) return fmt(shift(-3));
+    if (/前天/.test(t)) return fmt(shift(-2));
+    /* 周X / 星期X / 礼拜X，可带 上/本/这/下 前缀（周一为一周起点） */
+    const wm = t.match(/(上|本|这|下)?(?:周|星期|礼拜)([一二三四五六日天])/);
+    if (wm) {
+      const map = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
+      const target = map[wm[2]];
+      const dow = now.getDay() === 0 ? 7 : now.getDay();
+      const d = new Date(now);
+      if (wm[1] === '上') d.setDate(d.getDate() - (dow - 1) - 7 + (target - 1));
+      else if (wm[1] === '下') d.setDate(d.getDate() - (dow - 1) + 7 + (target - 1));
+      else d.setDate(d.getDate() - (dow - 1) + (target - 1));
+      return fmt(d);
+    }
+    if (/上周|上礼拜/.test(t)) return fmt(shift(-7));
+    /* x月x号/x日，或裸 x号/x日（裸日期若大于今天按上个月理解） */
+    const dm = t.match(/(?:(\d{1,2})月)?(\d{1,2})[号日]/);
+    if (dm) {
+      const day = Number(dm[2]);
+      const month = dm[1] ? Number(dm[1]) - 1 : now.getMonth();
+      let d = new Date(now.getFullYear(), month, day);
+      if (!dm[1] && day > now.getDate()) d = new Date(now.getFullYear(), month - 1, day);
+      return fmt(d);
+    }
+    return null;
+  }
+
+  function extractAmount(text) {
+    const t = String(text);
+    /* 1) 带货币单位的数字，取最后一个（「买了3瓶水15块」→15） */
+    const withUnit = t.match(/(\d+(?:\.\d{1,2})?)\s*(?:块钱|块|元|毛|￥|¥)/g);
+    if (withUnit) {
+      const last = withUnit[withUnit.length - 1].match(/(\d+(?:\.\d{1,2})?)/);
+      if (last) return Number(last[1]);
+    }
+    /* 2) 中文数字 + 块/元 */
+    const cn = t.match(/([零一二两三四五六七八九十百千]+)\s*(?:块钱|块|元)/);
+    if (cn) { const v = cnToNum(cn[1]); if (v) return v; }
+    /* 3) 句尾裸数字（「大盘鸡外卖31」→31） */
+    const tail = t.match(/(\d+(?:\.\d{1,2})?)\s*$/);
+    if (tail) return Number(tail[1]);
+    return null;
+  }
+
+  function hintCategory(text, kind) {
+    if (kind === 'income') return null;
+    const tt = String(text).replace(/\s+/g, '');
+    for (const [words, catName] of LOCAL_HINTS) {
+      if (words.some((w) => tt.includes(w))) {
+        const c = state.categories.find((x) => x.name === catName && (!x.parent_id || x.kind === 'expense'));
+        if (c) return c;
+      }
+    }
+    return null;
+  }
+
+  function cleanNote(t) {
+    let s = String(t);
+    s = s.replace(/(\d+(?:\.\d{1,2})?)\s*(?:块钱|块|元|毛|￥|¥)/g, '');
+    s = s.replace(/[零一二两三四五六七八九十百千]+\s*(?:块钱|块|元)/g, '');
+    s = s.replace(/(?:今天|今日|今早|中午|早上|上午|晚上|凌晨|昨天|昨晚|昨日|前天|大前天|(?:上|本|这|下)?(?:周|星期|礼拜)[一二三四五六日天]|(?:上|本|这)周|上礼拜|这礼拜|\d{1,2}月\d{1,2}[号日]|\d{1,2}[号日])/g, '');
+    s = s.replace(/(?:消费|花|买|支付)了|支付|付款|记一笔|记录|一共/g, '');
+    s = s.replace(/[\s\d，,。.！!？?、~～]+$/g, '').replace(/^[\s，,。、]+/, '');
+    return s.trim();
+  }
+
+  /* 把本地提取到的事实强加进解析结果；只要发生纠正，备注也从原话重取 */
+  function enforceLocalFacts(p, rawText) {
+    if (!p || typeof p !== 'object' || p.ok === false) return p;
+    const amt = extractAmount(rawText);
+    const dateHit = resolveDateExpr(rawText);
+    const hint = hintCategory(rawText, p.kind === 'income' ? 'income' : 'expense');
+    const fix = {};
+    if (amt != null && Number(p.amount) !== amt) fix.amount = amt;
+    if (dateHit) fix.date = dateHit;
+    if (hint && Number(p.category_id) !== hint.id) fix.category_id = hint.id;
+    if (Object.keys(fix).length) {
+      fix.note = cleanNote(rawText) || String(rawText).slice(0, 12);
+      return Object.assign({}, p, fix);
+    }
+    return p;
   }
 
   /* --------- 解析结果落地 --------- */
@@ -1699,6 +1811,7 @@
     }
 
     if (!parsed) parsed = localParse(text);
+    parsed = enforceLocalFacts(parsed, text);
     applyParse(parsed, text);
   }
 
@@ -2351,10 +2464,10 @@
   });
 
   document.addEventListener('change', (ev) => {
-    if (ev.target.id === 'billFile' && ev.target.files && ev.target.files[0]) {
-      const f = ev.target.files[0];
+    if (ev.target.id === 'billFile' && ev.target.files && ev.target.files.length) {
+      const files = Array.from(ev.target.files).slice(0, 5);
       ev.target.value = '';
-      handleBillPicked(f);
+      handleBillPicked(files);
     }
   });
 
