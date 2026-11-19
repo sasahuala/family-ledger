@@ -500,12 +500,13 @@
       </div>`;
     }).join('');
 
-    const whoChips = state.members.length > 1
-      ? `<div class="filterrow">
-          <button class="chip ${state.listWho === 'all' ? 'on' : ''}" data-act="list-who" data-who="all">全部</button>
-          ${state.members.map((m) => `<button class="chip ${state.listWho === m.user_id ? 'on' : ''}" data-act="list-who" data-who="${esc(m.user_id)}">${faceWrap(m.user_id, 17, memberName(m.user_id))}</button>`).join('')}
-        </div>`
-      : '';
+    const filterChips = `<div class="filterrow">
+        ${state.members.length > 1
+          ? `<button class="chip ${state.listWho === 'all' ? 'on' : ''}" data-act="list-who" data-who="all">全部</button>
+             ${state.members.map((m) => `<button class="chip ${state.listWho === m.user_id ? 'on' : ''}" data-act="list-who" data-who="${esc(m.user_id)}">${faceWrap(m.user_id, 17, memberName(m.user_id))}</button>`).join('')}`
+          : ''}
+        <button class="chip ${state.listCat ? 'on' : ''}" data-act="pick-cat" style="margin-left:auto">${state.listCat ? '🏷 ' + esc(catLabel(state.listCat).name) : '🏷 分类'}</button>
+      </div>`;
 
     const activeFilter = (state.listCat || state.listKw || state.listDay)
       ? `<div class="filterrow">
@@ -529,7 +530,7 @@
         <div><div class="v" style="color:var(--income)">${money(t.inc)}</div><div class="l">收入</div></div>
         <div><div class="v">${money(t.net)}</div><div class="l">结余</div></div>
       </div>
-      ${whoChips}
+      ${filterChips}
       ${activeFilter}
       ${groups || `<div class="empty">${state.listDay ? '这天还没有记录' : (state.listCat || state.listKw ? '没有符合筛选的记录' : '这个月还没有记录')}<br><span class="small">${state.listDay ? '点上方「' + esc(monthLabel(ym)) + '」换一天，或清除筛选' : (state.listCat || state.listKw ? '换个条件试试' : '去「记一笔」开始吧')}</span></div>`}`;
   }
@@ -2016,16 +2017,51 @@
       const e = state.entries.find((x) => x.id === s.id);
       if (!e) return '';
       const lab = catLabel(e.category_id);
+      const isExp = e.kind === 'expense';
+      if (!s.edit) s.edit = { payer: e.payer_id || myUid(), shared: e.is_shared !== false };
+      const ed = s.edit;
+      const other = state.members.find((m) => m.user_id !== myUid());
       return `<div class="sheet-mask" data-act="close-sheet">
         <div class="sheet" data-stop>
           <h4>${esc(lab.icon)} ${esc(lab.name)}</h4>
           <div class="field"><span class="prefix">¥</span><input id="editAmt" type="number" inputmode="decimal" step="0.01" value="${Number(e.amount).toFixed(2)}"></div>
           <div class="field"><input id="editNote" type="text" placeholder="备注" value="${esc(e.note || '')}" maxlength="60"></div>
           <div class="field"><input id="editDate" type="date" value="${esc(e.spent_on)}" max="${todayStr()}"></div>
+          ${isExp ? `<div class="meta" style="border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <div class="line"><span class="k">谁付的</span>
+                <div class="toggle">
+                  <button class="${ed.payer === myUid() ? 'on' : ''}" data-act="edit-payer" data-uid="${esc(myUid())}">${faceWrap(myUid(), 16, state.myName || '我')}</button>
+                  ${other ? `<button class="${ed.payer === other.user_id ? 'on' : ''}" data-act="edit-payer" data-uid="${esc(other.user_id)}">${faceWrap(other.user_id, 16, other.display_name || '对方')}</button>` : ''}
+                </div>
+              </div>
+              <div class="line"><span class="k">归属</span>
+                <div class="toggle" style="margin-left:auto">
+                  <button class="${ed.shared ? 'on' : ''}" data-act="edit-shared" data-sh="1">共同</button>
+                  <button class="${!ed.shared ? 'on' : ''}" data-act="edit-shared" data-sh="0">个人</button>
+                </div>
+              </div>
+            </div>` : ''}
           <div class="actions">
             <button class="btn" data-act="save-entry" data-id="${e.id}">保存修改</button>
             <button class="btn danger" data-act="delete-entry" data-id="${e.id}">删除这笔</button>
           </div>
+        </div>
+      </div>`;
+    }
+    if (s.type === 'catpick') {
+      const roots = state.categories.filter((c) => !c.parent_id && c.kind === 'expense');
+      const rows = roots.map((r) => {
+        const subs = state.categories.filter((c) => c.parent_id === r.id);
+        return `<div class="cp-row">
+          <button class="cp-root ${state.listCat === r.id ? 'on' : ''}" data-act="cat-pick" data-id="${r.id}">${esc(r.icon || '📦')} ${esc(r.name)}</button>
+          ${subs.length ? `<div class="cp-subs">${subs.map((c) => `<button class="chip ${state.listCat === c.id ? 'on' : ''}" data-act="cat-pick" data-id="${c.id}">${esc(c.icon || '')} ${esc(c.name)}</button>`).join('')}</div>` : ''}
+        </div>`;
+      }).join('');
+      return `<div class="sheet-mask" data-act="close-sheet">
+        <div class="sheet" data-stop>
+          <h4>按分类看明细</h4>
+          <div style="margin-bottom:12px"><button class="chip ${state.listCat ? '' : 'on'}" data-act="cat-pick" data-id="">🧾 全部分类</button></div>
+          ${rows}
         </div>
       </div>`;
     }
@@ -2210,9 +2246,16 @@
     if (!amt || amt <= 0) { toast('金额不对'); return; }
     const note = $('#editNote').value.trim();
     const date = $('#editDate').value || todayStr();
+    const old = state.entries.find((x) => x.id === id);
+    const payload = { amount: Number(amt.toFixed(2)), note: note || '', spent_on: date };
+    if (old && old.kind === 'expense' && state.sheet && state.sheet.edit) {
+      payload.is_shared = !!state.sheet.edit.shared;
+      payload.payer_id = state.sheet.edit.payer;
+      payload.payer_name = memberName(state.sheet.edit.payer);
+    }
     if (DEMO) {
       const idx = state.entries.findIndex((e) => e.id === id);
-      if (idx >= 0) state.entries[idx] = Object.assign({}, state.entries[idx], { amount: Number(amt.toFixed(2)), note: note || null, spent_on: date });
+      if (idx >= 0) state.entries[idx] = Object.assign({}, state.entries[idx], payload);
       state.sheet = null;
       render();
       toast('已更新');
@@ -2221,7 +2264,7 @@
     const { data, error } = await db().rpc('ledger_entry_update', {
       p_token: state.token,
       p_id: id,
-      p_payload: { amount: Number(amt.toFixed(2)), note: note || '', spent_on: date },
+      p_payload: payload,
     });
     if (error) { toast('修改失败：' + (error.message || '')); return; }
     if (!data) { toast('没有权限修改这笔'); return; }
@@ -2345,6 +2388,12 @@
     },
     'clear-cat': () => { state.listCat = null; render(); },
     'clear-kw': () => { state.listKw = null; render(); },
+    'pick-cat': () => { state.sheet = { type: 'catpick' }; render(); },
+    'cat-pick': (el) => {
+      state.listCat = el.dataset.id ? Number(el.dataset.id) : null;
+      state.sheet = null;
+      render();
+    },
 
     login: () => loginWithCode(),
 
@@ -2422,6 +2471,12 @@
     'open-entry': (el) => { state.sheet = { type: 'entry', id: Number(el.dataset.id) }; render(); },
     'save-entry': (el) => updateEntry(Number(el.dataset.id)),
     'delete-entry': (el) => deleteEntry(Number(el.dataset.id)),
+    'edit-payer': (el) => {
+      if (state.sheet && state.sheet.edit) { state.sheet.edit.payer = el.dataset.uid; render(); }
+    },
+    'edit-shared': (el) => {
+      if (state.sheet && state.sheet.edit) { state.sheet.edit.shared = el.dataset.sh === '1'; render(); }
+    },
     'close-sheet': () => { state.sheet = null; render(); },
     'rename-me': () => { state.sheet = { type: 'prompt', title: '你的昵称', placeholder: '对方会看到这个名字', value: state.myName || '' }; render(); },
     'add-cat': () => { state.sheet = { type: 'prompt', title: '新增一级分类', placeholder: '例如：宠物' }; render(); },
