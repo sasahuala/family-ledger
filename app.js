@@ -220,7 +220,7 @@
     listCat: null,
     listKw: null,
     draft: null,
-    openCat: null,
+    openCats: [],
     sheet: null,
     chat: [],
     chatBusy: false,
@@ -425,12 +425,12 @@
         ${
           d.kind === 'expense'
             ? `<div class="line">
-                 <span class="k">谁付的</span>
-                 <div class="toggle">
-                   <button class="${d.payer === myUid() ? 'on' : ''}" data-act="set-payer" data-uid="${esc(myUid())}">${faceWrap(myUid(), 16, state.myName || '我')}</button>
-                   ${other ? `<button class="${d.payer === other.user_id ? 'on' : ''}" data-act="set-payer" data-uid="${esc(other.user_id)}">${faceWrap(other.user_id, 16, other.display_name || '对方')}</button>` : ''}
+                 <span class="k">归属</span>
+                 <div class="toggle" style="margin-left:auto">
+                   <button class="${d.shared ? 'on' : ''}" data-act="set-own" data-own="common">共同</button>
+                   <button class="${!d.shared && d.payer === myUid() ? 'on' : ''}" data-act="set-own" data-own="me">自己</button>
+                   ${other ? `<button class="${!d.shared && d.payer !== myUid() ? 'on' : ''}" data-act="set-own" data-own="other">对方</button>` : ''}
                  </div>
-                 <button class="chip ${d.shared ? 'on' : ''}" style="margin-left:auto;height:30px" data-act="toggle-shared">${d.shared ? '共同支出' : '个人支出'}</button>
                </div>`
             : ''
         }
@@ -487,7 +487,7 @@
         ${items.map((e) => {
           const lab = catLabel(e.category_id);
           const uid = personOf(e);
-          const tag = e.kind === 'expense' ? (e.is_shared ? '共同' : '个人') : '收入';
+          const tag = e.kind === 'expense' ? (e.is_shared ? '共同' : (personOf(e) === myUid() ? '自己' : '对方')) : '收入';
           return `<div class="item" data-act="open-entry" data-id="${e.id}">
             <div class="ico">${esc(lab.icon)}</div>
             <div class="main">
@@ -596,12 +596,12 @@
     const legend = colored.slice(0, 6).map((r) => `<div class="li">
         <span class="dot" style="background:${r.color}"></span>
         <span class="nm">${esc(r.name)}</span>
-        <span class="pc">${expTotal ? Math.round((r.total / expTotal) * 100) : 0}%</span>
+        <span class="pc">${expTotal ? Math.round((r.total / expTotal) * 100) : 0}% · ${moneyShort(r.total)}</span>
       </div>`).join('');
 
     const catLines = colored.map((r) => {
       const pct = expTotal ? (r.total / expTotal) * 100 : 0;
-      const open = state.openCat === r.id;
+      const open = (state.openCats || []).indexOf(r.id) >= 0;
       const subs = Array.from(r.subs.values()).sort((a, b) => b.total - a.total);
       const subHtml = open && subs.length > 1
         ? `<div class="sub-list">${subs.map((s) => `<div class="si"><span class="nm">${esc(s.name)}</span><span class="money">${money(s.total)}</span></div>`).join('')}</div>`
@@ -846,8 +846,7 @@
       <div class="rec-meta">
         <span class="rec-tag ${info ? 'hot' : ''}">${info ? esc(info.icon + ' ' + info.text) : '待分类'}</span>
         <span>${esc(d.date === todayStr() ? '今天' : d.date)}</span>
-        ${d.kind === 'expense' ? `<span class="face">${faceSVG(d.payer, 14)}<span>${esc(memberName(d.payer))}付</span></span>` : ''}
-        ${d.kind === 'expense' ? `<span>${d.shared ? '共同' : '个人'}</span>` : ''}
+        ${d.kind === 'expense' ? `<span class="face">${d.shared ? '' : faceSVG(d.payer, 14)}<span>${esc(d.shared ? '共同支出' : (d.payer === myUid() ? '自己付' : '对方付'))}</span></span>` : ''}
         ${saved ? '<span style="color:var(--income);font-weight:600">已记录</span>' : ''}
         ${undone ? '<span class="muted">已撤销</span>' : ''}
       </div>
@@ -1559,7 +1558,7 @@
       note: t.slice(0, 12),
       date: resolveDateExpr(t) || todayStr(),
       payer: payerOther ? 'other' : 'me',
-      shared: !personal,
+      shared: !personal && !payerOther,
       confidence: catId ? 0.6 : 0,
       reply: amount ? (catId ? '记好了，确认一下分类' : '记下了，选个分类？') : '没听出金额，再说一次？比如「买水 5 块」',
       fallback: true,
@@ -1642,7 +1641,7 @@
     s = s.replace(/(\d+(?:\.\d{1,2})?)\s*(?:块钱|块|元|毛|￥|¥)/g, '');
     s = s.replace(/[零一二两三四五六七八九十百千]+\s*(?:块钱|块|元)/g, '');
     s = s.replace(/(?:今天|今日|今早|中午|早上|上午|晚上|凌晨|昨天|昨晚|昨日|前天|大前天|(?:上|本|这|下)?(?:周|星期|礼拜)[一二三四五六日天]|(?:上|本|这)周|上礼拜|这礼拜|\d{1,2}月\d{1,2}[号日]|\d{1,2}[号日])/g, '');
-    s = s.replace(/(?:消费|花|买|支付)了|支付|付款|记一笔|记录|一共/g, '');
+    s = s.replace(/(?:消费|花|买|支付)了|支付|付款|记一笔|记录|一共|多少钱|花费/g, '');
     s = s.replace(/[\s\d，,。.！!？?、~～]+$/g, '').replace(/^[\s，,。、]+/, '');
     return s.trim();
   }
@@ -1677,14 +1676,15 @@
       return;
     }
 
+    const localNote = cleanNote(rawText);
     const draft = {
       amount: Number(p.amount),
       kind: p.kind === 'income' ? 'income' : 'expense',
       category_id: p.category_id ? Number(p.category_id) : null,
-      note: (p.note || rawText).slice(0, 20),
+      note: ((localNote && localNote.length) ? localNote : (p.note || rawText)).slice(0, 20),
       date: /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date : todayStr(),
       payer: p.payer === 'other' ? (otherUid() || myUid()) : myUid(),
-      shared: p.shared !== false,
+      shared: p.shared !== false && p.payer !== 'other',
     };
     if (draft.date > todayStr()) draft.date = todayStr();
     if (draft.kind === 'income') draft.shared = false;
@@ -2024,23 +2024,26 @@
       if (!s.edit) s.edit = { payer: e.payer_id || myUid(), shared: e.is_shared !== false };
       const ed = s.edit;
       const other = state.members.find((m) => m.user_id !== myUid());
+      const catOptions = state.categories.filter((c) => !c.parent_id).map((r) => {
+        const subs = state.categories.filter((c) => c.parent_id === r.id);
+        return `<optgroup label="${esc((r.icon || '') + ' ' + r.name)}">` +
+          `<option value="${r.id}" ${e.category_id === r.id ? 'selected' : ''}>${esc((r.icon || '') + ' ' + r.name)}</option>` +
+          subs.map((c) => `<option value="${c.id}" ${e.category_id === c.id ? 'selected' : ''}>${esc((c.icon || '') + ' ' + c.name)}</option>`).join('') +
+          `</optgroup>`;
+      }).join('');
       return `<div class="sheet-mask" data-act="close-sheet">
         <div class="sheet" data-stop>
           <h4>${esc(lab.icon)} ${esc(lab.name)}</h4>
           <div class="field"><span class="prefix">¥</span><input id="editAmt" type="number" inputmode="decimal" step="0.01" value="${Number(e.amount).toFixed(2)}"></div>
+          <div class="field"><span class="prefix">🏷</span><select id="editCat" class="cat-select">${catOptions}</select></div>
           <div class="field"><input id="editNote" type="text" placeholder="备注" value="${esc(e.note || '')}" maxlength="60"></div>
           <div class="field"><input id="editDate" type="date" value="${esc(e.spent_on)}" max="${todayStr()}"></div>
           ${isExp ? `<div class="meta" style="border:1px solid var(--line);border-radius:12px;overflow:hidden">
-              <div class="line"><span class="k">谁付的</span>
-                <div class="toggle">
-                  <button class="${ed.payer === myUid() ? 'on' : ''}" data-act="edit-payer" data-uid="${esc(myUid())}">${faceWrap(myUid(), 16, state.myName || '我')}</button>
-                  ${other ? `<button class="${ed.payer === other.user_id ? 'on' : ''}" data-act="edit-payer" data-uid="${esc(other.user_id)}">${faceWrap(other.user_id, 16, other.display_name || '对方')}</button>` : ''}
-                </div>
-              </div>
               <div class="line"><span class="k">归属</span>
                 <div class="toggle" style="margin-left:auto">
-                  <button class="${ed.shared ? 'on' : ''}" data-act="edit-shared" data-sh="1">共同</button>
-                  <button class="${!ed.shared ? 'on' : ''}" data-act="edit-shared" data-sh="0">个人</button>
+                  <button class="${ed.shared ? 'on' : ''}" data-act="edit-own" data-own="common">共同</button>
+                  <button class="${!ed.shared && ed.payer === myUid() ? 'on' : ''}" data-act="edit-own" data-own="me">自己</button>
+                  ${other ? `<button class="${!ed.shared && ed.payer !== myUid() ? 'on' : ''}" data-act="edit-own" data-own="other">对方</button>` : ''}
                 </div>
               </div>
             </div>` : ''}
@@ -2119,15 +2122,23 @@
     const showKeypad = state.tab === 'entry';
     const showComposer = state.tab === 'chat';
 
+    const prevView = $('#mainView');
+    if (prevView && !state._skipScrollCap) {
+      (state.scrollMem = state.scrollMem || {})[state.tab] = prevView.scrollTop;
+    }
+
     app.innerHTML = `<div class="view" id="mainView">${inner}</div>
       ${showKeypad ? renderKeypad() : ''}
       ${showComposer ? renderComposer() : ''}
       ${renderTabbar()}
       ${renderSheet()}`;
 
+    const view = $('#mainView');
     if (showComposer) {
-      const v = $('#mainView');
-      if (v) v.scrollTop = v.scrollHeight;
+      view.scrollTop = view.scrollHeight;
+    } else {
+      const mem = (state.scrollMem || {})[state.tab];
+      if (view && typeof mem === 'number') view.scrollTop = mem;
     }
   }
 
@@ -2251,11 +2262,30 @@
     const date = $('#editDate').value || todayStr();
     const old = state.entries.find((x) => x.id === id);
     const payload = { amount: Number(amt.toFixed(2)), note: note || '', spent_on: date };
-    if (old && old.kind === 'expense' && state.sheet && state.sheet.edit) {
-      payload.is_shared = !!state.sheet.edit.shared;
-      payload.payer_id = state.sheet.edit.payer;
-      payload.payer_name = memberName(state.sheet.edit.payer);
+
+    /* 分类/类型可改：选中收入类目则整笔转收入 */
+    let kind = old ? old.kind : 'expense';
+    const sel = $('#editCat');
+    if (sel && sel.value) {
+      const cat = catById(Number(sel.value));
+      if (cat) {
+        payload.category_id = cat.id;
+        payload.kind = cat.kind || 'expense';
+        kind = payload.kind;
+      }
     }
+
+    if (kind === 'expense') {
+      const ed = state.sheet && state.sheet.edit;
+      payload.is_shared = !!(ed && ed.shared);
+      payload.payer_id = ed ? ed.payer : (old ? (old.payer_id || myUid()) : myUid());
+      payload.payer_name = memberName(payload.payer_id);
+    } else {
+      payload.is_shared = false;
+      payload.payer_id = myUid();
+      payload.payer_name = memberName(myUid());
+    }
+
     if (DEMO) {
       const idx = state.entries.findIndex((e) => e.id === id);
       if (idx >= 0) state.entries[idx] = Object.assign({}, state.entries[idx], payload);
@@ -2355,7 +2385,15 @@
 
   /* ---------------- 事件 ---------------- */
   const handlers = {
-    tab: (el) => { state.tab = el.dataset.tab; if (state.tab === 'entry' && !state.draft) state.draft = newDraft(); render(); },
+    tab: (el) => {
+      const v = $('#mainView');
+      if (v) (state.scrollMem = state.scrollMem || {})[state.tab] = v.scrollTop;
+      state._skipScrollCap = true;
+      state.tab = el.dataset.tab;
+      if (state.tab === 'entry' && !state.draft) state.draft = newDraft();
+      render();
+      state._skipScrollCap = false;
+    },
 
     mic: () => toggleVoice(),
     camera: () => { const f = $('#billFile'); if (f) f.click(); },
@@ -2420,8 +2458,17 @@
       state.draft.cat2 = id === 0 ? null : id;
       render();
     },
-    'set-payer': (el) => { state.draft.payer = el.dataset.uid; render(); },
-    'toggle-shared': () => { state.draft.shared = !state.draft.shared; render(); },
+    'set-own': (el) => {
+      const own = el.dataset.own;
+      if (own === 'common') state.draft.shared = true;
+      else if (own === 'me') { state.draft.shared = false; state.draft.payer = myUid(); }
+      else { state.draft.shared = false; state.draft.payer = otherUid() || myUid(); }
+      /* 局部刷新高亮，避免整页重绘丢失未保存的输入 */
+      document.querySelectorAll('[data-act="set-own"]').forEach((b) => {
+        const o = b.dataset.own;
+        b.classList.toggle('on', o === 'common' ? state.draft.shared : (!state.draft.shared && (o === 'me' ? state.draft.payer === myUid() : state.draft.payer !== myUid())));
+      });
+    },
 
     key: (el) => {
       const k = el.dataset.k;
@@ -2463,22 +2510,31 @@
     },
     'clear-day': () => { state.listDay = null; render(); },
     'list-who': (el) => { state.listWho = el.dataset.who || 'all'; render(); },
-    'sum-prev': () => { state.month = shiftYm(state.month, -1); state.openCat = null; render(); },
-    'sum-next': () => { state.month = shiftYm(state.month, 1); state.openCat = null; render(); },
+    'sum-prev': () => { state.month = shiftYm(state.month, -1); state.openCats = []; render(); },
+    'sum-next': () => { state.month = shiftYm(state.month, 1); state.openCats = []; render(); },
     'toggle-cat': (el) => {
       const id = Number(el.dataset.id);
-      state.openCat = state.openCat === id ? null : id;
+      const arr = state.openCats || (state.openCats = []);
+      const i = arr.indexOf(id);
+      if (i >= 0) arr.splice(i, 1); else arr.push(id);
       render();
     },
 
     'open-entry': (el) => { state.sheet = { type: 'entry', id: Number(el.dataset.id) }; render(); },
     'save-entry': (el) => updateEntry(Number(el.dataset.id)),
     'delete-entry': (el) => deleteEntry(Number(el.dataset.id)),
-    'edit-payer': (el) => {
-      if (state.sheet && state.sheet.edit) { state.sheet.edit.payer = el.dataset.uid; render(); }
-    },
-    'edit-shared': (el) => {
-      if (state.sheet && state.sheet.edit) { state.sheet.edit.shared = el.dataset.sh === '1'; render(); }
+    'edit-own': (el) => {
+      if (!state.sheet || !state.sheet.edit) return;
+      const own = el.dataset.own;
+      const ed = state.sheet.edit;
+      if (own === 'common') ed.shared = true;
+      else if (own === 'me') { ed.shared = false; ed.payer = myUid(); }
+      else { ed.shared = false; ed.payer = otherUid() || myUid(); }
+      /* 局部刷新高亮，避免重绘弹窗丢掉已改的分类/金额 */
+      document.querySelectorAll('[data-act="edit-own"]').forEach((b) => {
+        const o = b.dataset.own;
+        b.classList.toggle('on', o === 'common' ? ed.shared : (!ed.shared && (o === 'me' ? ed.payer === myUid() : ed.payer !== myUid())));
+      });
     },
     'close-sheet': () => { state.sheet = null; render(); },
     'rename-me': () => { state.sheet = { type: 'prompt', title: '你的昵称', placeholder: '对方会看到这个名字', value: state.myName || '' }; render(); },

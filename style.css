@@ -65,6 +65,12 @@ input:focus, textarea:focus { outline: none; }
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
 }
 .field input { border: 0; background: none; flex: 1; min-width: 0; font-size: 16px; }
+.field select.cat-select {
+  border: 0; background: none; flex: 1; min-width: 0; font-size: 16px;
+  appearance: none; -webkit-appearance: none; text-align: right; direction: rtl;
+  padding-right: 2px; color: var(--ink);
+}
+.field select.cat-select option, .field select.cat-select optgroup { direction: ltr; text-align: left; }
 .field .prefix { color: var(--muted); font-variant-numeric: tabular-nums; }
 .code-btn {
   color: var(--accent); font-weight: 600; font-size: 14px;
