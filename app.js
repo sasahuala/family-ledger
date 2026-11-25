@@ -2,12 +2,8 @@
 (function () {
   'use strict';
 
-  /* ---------------- 配置 ---------------- */
-  const PUBLIC_CONFIG = {
-    endpoint: 'https://expense-ledger-20828.app.workbuddy.host',
-    oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
-    publishableKey: 'wbpk_REDACTED',
-  };
+  /* ---------------- 配置（来自 config.js，不入库；模板见 config.example.js） ---------------- */
+  const PUBLIC_CONFIG = window.PUBLIC_CONFIG;
 
   const cloud = WorkBuddyCloud.createWorkBuddyCloud({
     endpoint: PUBLIC_CONFIG.endpoint,
